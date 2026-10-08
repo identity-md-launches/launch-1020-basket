@@ -113,6 +113,30 @@ contract RedemptionGasTest is Test {
         assertGt(vault.owed(receiver, tokens[249]), 0);
     }
 
+    function testGas250RetiredUnreadableAssetsStillRedeem() public {
+        _setup(250, 250, 50_000, 250_000, 50);
+        uint256[] memory ids = new uint256[](250);
+        for (uint256 i; i < 250; ++i) {
+            vm.prank(guardian);
+            vault.close(tokens[i]);
+            vm.prank(owner);
+            ids[i] = vault.propose(T.Action.Retire, tokens[i], "");
+        }
+        vm.warp(block.timestamp + 2 days);
+        for (uint256 i; i < 250; ++i) {
+            vm.prank(owner);
+            vault.execute(ids[i]);
+            assertTrue(vault.asset(tokens[i]).retired);
+        }
+        _hostile(2, 2);
+        uint256 expected = 1e18 * (shares / 2) / vault.totalSupply();
+        _measure("250 retired assets with unreadable balances gas");
+        for (uint256 i; i < 250; ++i) {
+            assertEq(vault.owed(receiver, tokens[i]), expected);
+            assertEq(vault.managed(tokens[i]), 1e18 - expected);
+        }
+    }
+
     function testGasDirect50TokensConsumeEntirePaymentAllowance() public {
         _setup(250, 50, 50_000, 250_000, 50);
         _hostile(2, 2);
