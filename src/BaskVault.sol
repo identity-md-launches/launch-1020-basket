@@ -33,6 +33,9 @@ contract BaskVault {
     mapping(address => uint256) private index;
     mapping(address => address) private feedAsset;
     mapping(address => uint256) public managed;
+    // Cache nonzero holdings so idle assets do not consume cold storage reads in redeem.
+    uint256 private heldCount;
+    mapping(uint256 => uint256) private heldBitmap;
     mapping(address => mapping(address => uint256)) public owed;
     mapping(address => uint256) public totalOwed;
 
@@ -373,7 +376,7 @@ contract BaskVault {
             if (!ok) revert TransferFailed();
             uint256 available = bal > totalOwed[token] ? bal - totalOwed[token] : 0;
             uint256 extra = available > managed[token] ? available - managed[token] : 0;
-            managed[token] += extra;
+            _setManaged(token, managed[token] + extra);
             emit Resynced(token, extra);
         } else if (p.action == T.Action.Guardian) {
             guardian = abi.decode(p.data, (address));
@@ -448,6 +451,11 @@ contract BaskVault {
         if (!assets[token].retired || managed[token] != 0 || totalOwed[token] != 0) revert InvalidAsset();
         uint256 i = index[token] - 1;
         address last = assetTokens[assetTokens.length - 1];
+        if (managed[last] != 0) {
+            uint256 lastIndex = assetTokens.length - 1;
+            heldBitmap[lastIndex >> 8] &= ~(uint256(1) << (lastIndex & 255));
+            heldBitmap[i >> 8] |= uint256(1) << (i & 255);
+        }
         assetTokens[i] = last;
         index[last] = i + 1;
         assetTokens.pop();
@@ -491,7 +499,8 @@ contract BaskVault {
             if (!readable) return (T.Reason.BalanceUnreadable, token, 0, answers);
             uint256 debt = totalOwed[token];
             uint256 m = managed[token];
-            if (bal < debt || bal - debt < m) return (T.Reason.Deficit, token, 0, answers);
+            uint256 available = bal > debt ? bal - debt : 0;
+            if ((wanted[i] && bal < debt) || available < m) return (T.Reason.Deficit, token, 0, answers);
             uint256 updatedAt;
             if (m != 0 || wanted[i]) {
                 (reason, answers[i], updatedAt,) = O.price(a, config);
@@ -562,7 +571,7 @@ contract BaskVault {
             if (!ok || afterBalance < beforeBalance || afterBalance - beforeBalance != amounts[i]) {
                 revert TransferFailed();
             }
-            managed[token] += amounts[i];
+            _setManaged(token, managed[token] + amounts[i]);
         }
         for (uint256 i; i < assetTokens.length; ++i) {
             address token = assetTokens[i];
@@ -603,6 +612,23 @@ contract BaskVault {
         if (!ok || afterBalance > beforeBalance || beforeBalance - afterBalance != amount) revert TransferFailed();
     }
 
+    /// @dev All managed changes keep the count and the asset-index bitmap in sync.
+    function _setManaged(address token, uint256 amount) private {
+        uint256 previous = managed[token];
+        if ((previous == 0) != (amount == 0)) {
+            uint256 i = index[token] - 1;
+            uint256 mask = uint256(1) << (i & 255);
+            if (amount == 0) {
+                --heldCount;
+                heldBitmap[i >> 8] &= ~mask;
+            } else {
+                ++heldCount;
+                heldBitmap[i >> 8] |= mask;
+            }
+        }
+        managed[token] = amount;
+    }
+
     function _available(address token, uint256 m) private view returns (bool readable, uint256 available) {
         uint256 bal;
         (readable, bal) = O.balance(token, config.balanceGas);
@@ -625,15 +651,17 @@ contract BaskVault {
         balanceOf[msg.sender] -= net;
         totalSupply -= net;
         _emitTransfer(msg.sender, address(0), net);
-        uint256 count;
         uint256 length = assetTokens.length;
-        for (uint256 i; i < length; ++i) {
-            if (managed[assetTokens[i]] != 0) ++count;
-        }
-        bool direct = count <= config.directLimit;
+        bool direct = heldCount <= config.directLimit;
         uint256 payGas = config.payGas;
         amounts = new uint256[](length);
+        uint256 bits;
         for (uint256 i; i < length; ++i) {
+            if (i & 255 == 0) bits = heldBitmap[i >> 8];
+            if (bits & (uint256(1) << (i & 255)) == 0) {
+                if (i < minAmountsOut.length && minAmountsOut[i] != 0) revert Slippage();
+                continue;
+            }
             address token = assetTokens[i];
             uint256 m = managed[token];
             uint256 leg;
@@ -644,7 +672,7 @@ contract BaskVault {
             if (i < minAmountsOut.length && leg < minAmountsOut[i]) revert Slippage();
             amounts[i] = leg;
             if (leg == 0) continue;
-            managed[token] = m - leg;
+            _setManaged(token, m - leg);
             bool paid;
             if (direct) {
                 // Do not copy arbitrary revert data from a hostile token.
@@ -706,7 +734,7 @@ contract BaskVault {
         if (!readable) revert TransferFailed();
         uint256 shortfall = available < m ? m - available : 0;
         uint256 loss = d.amount < shortfall ? d.amount : shortfall;
-        managed[token] = m - loss;
+        _setManaged(token, m - loss);
         delete deficits[token];
         emit LossRecognized(token, loss);
     }

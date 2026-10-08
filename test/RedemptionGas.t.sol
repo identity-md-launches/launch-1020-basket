@@ -75,13 +75,19 @@ contract RedemptionGasTest is Test {
     }
 
     function _measure(string memory label) private returns (uint256 gasUsed) {
+        return _measure(label, false);
+    }
+
+    function _measure(string memory label, bool fullMinima) private returns (uint256 gasUsed) {
         // Clear all warmed account/storage accesses left by fixture setup.
         for (uint256 i; i < tokens.length; ++i) {
             vm.cool(tokens[i]);
             vm.cool(feeds[i]);
         }
         vm.cool(address(vault));
-        bytes memory input = abi.encodeCall(vault.redeem, (shares / 2, receiver, new uint256[](0), block.timestamp));
+        bytes memory input = abi.encodeCall(
+            vault.redeem, (shares / 2, receiver, new uint256[](fullMinima ? tokens.length : 0), block.timestamp)
+        );
         vm.prank(alice);
         uint256 start = gasleft();
         (bool ok, bytes memory data) = address(vault).call{gas: 28_000_000}(input);
@@ -134,6 +140,24 @@ contract RedemptionGasTest is Test {
         assertGt(vault.owed(receiver, tokens[253]), 0);
     }
 
+    function testGas350Assets47DirectWithMaximumPaymentAllowance() public {
+        _setup(350, 47, 20_000, 500_000, 47);
+        _inflateAndEnableFee(47);
+        _hostile(2, 2);
+        _measure("350 listed / 47 held assets with 500k payment allowance gas", true);
+        assertGt(vault.owed(receiver, tokens[46]), 0);
+        assertEq(vault.owed(receiver, tokens[47]), 0);
+    }
+
+    function testGas254Assets45DirectWithMaximumPaymentAllowance() public {
+        _setup(254, 45, 50_000, 500_000, 45);
+        _inflateAndEnableFee(45);
+        _hostile(2, 2);
+        _measure("254 listed / 45 held assets with 500k payment allowance gas", true);
+        assertGt(vault.owed(receiver, tokens[44]), 0);
+        assertEq(vault.owed(receiver, tokens[45]), 0);
+    }
+
     function testGasMaximumBalanceAndPaymentAllowance() public {
         _setup(49, 26, 500_000, 500_000, 26);
         _hostile(2, 2);
@@ -157,8 +181,12 @@ contract RedemptionGasTest is Test {
     }
 
     function _inflateAndEnableFee() private {
-        uint256[] memory ids = new uint256[](tokens.length);
-        for (uint256 i; i < tokens.length; ++i) {
+        _inflateAndEnableFee(tokens.length);
+    }
+
+    function _inflateAndEnableFee(uint256 active) private {
+        uint256[] memory ids = new uint256[](active);
+        for (uint256 i; i < active; ++i) {
             MockToken(tokens[i]).mint(address(vault), type(uint256).max - 1e18);
             vm.prank(owner);
             ids[i] = vault.propose(T.Action.Resync, tokens[i], "");

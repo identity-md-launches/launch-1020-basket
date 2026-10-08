@@ -8,15 +8,17 @@ On 2026-10-08, using Foundry 1.8.3 and the pinned compiler configuration:
 
 | Check | Result |
 | --- | --- |
-| `forge build --sizes` | Passed; BaskVault runtime 23,424 bytes |
-| `forge test -vv` | 66 tests passed, 0 failed; two fuzz tests with 256 cases each |
+| `forge build --sizes` | Passed; BaskVault runtime 23,736 bytes |
+| `forge test` | 78 tests passed, 0 failed; includes two fuzz tests with 256 cases each |
 | `forge fmt --check` | Passed |
 | Deployed-runtime escape-opcode scan | Passed |
-| 250 unreadable assets, default settings | 26,647,011 gas |
-| 350 unreadable assets, minimum balance allowance | 26,784,485 gas |
-| 250 assets, 52,000 balance allowance, maximum accounting quantities and fees | 27,236,615 gas |
-| 50 assets, 500,000 balance allowance, maximum accounting quantities and fees | 27,910,114 gas |
-| 26 direct failures, 500,000 balance/payment allowances | 27,454,112 gas |
+| 250 unreadable assets, default settings | 26,567,535 gas |
+| 350 unreadable assets, minimum balance allowance | 26,673,706 gas |
+| 250 assets, 52,000 balance allowance, maximum accounting quantities and fees | 27,157,139 gas |
+| 50 assets, 500,000 balance allowance, maximum accounting quantities and fees | 27,897,638 gas |
+| 26 direct failures, 500,000 balance/payment allowances | 27,331,244 gas |
+| 350 listed / 47 held, 20,000 balance / 500,000 payment allowance, maximum quantities, fees, full minima array | 26,985,824 gas |
+| 254 listed / 45 held, 50,000 balance / 500,000 payment allowance, maximum quantities, fees, full minima array | 27,149,129 gas |
 
 Gas figures include the measured call and its calling-harness overhead; they exclude construction/setup and transaction intrinsic gas. The runtime is below the 24,000-byte threshold, so all requested views remain on BaskVault.
 
@@ -39,6 +41,10 @@ The exact-bound 50-asset test exposed excessive overhead in the first implementa
 
 The gas inequalities bound the configurable external-call work plus accounting overhead. Redemption never iterates proposals, oracle data, or claimants. Its asset loops are bounded by the configured asset count. Token returndata copying is fixed at 32 bytes for balance/transfer results and zero bytes for self-call failures. A malicious asset cannot force unbounded memory expansion in the caller by returning a large blob.
 
+The revision reproduced both mixed idle/held failures in the reviewer's unchanged proof: the original redemption exhausted its 28-million allowance. The fix preserves both settings inequalities and caches the count and bitmap of nonzero managed holdings. Redemption skips cold token/accounting reads for idle slots and avoids the separate counting pass, while preserving minima checks for idle slots. Every managed zero crossing updates this internal cache; removal relocates a held last asset's bit with the existing swap-and-pop order. `HeldAccounting.t.sol` tests deposit, resync, partial/full loss, retirement, removal and relisting, including movement across bitmap slots 255/256. The unchanged proof passes at 27,055,311 and 26,869,697 gas; the permanent mixed-asset regressions additionally exercise maximum accounting values, fees and full minima arrays as recorded above.
+
+`DepositDebt.t.sol` reproduces and fixes the advisory deposit denial after a full managed loss leaves uncovered claims. Shortfall uses nonnegative availability; only input tokens additionally require their balance to cover all claims. The tests confirm that unrelated deposits/previews succeed, depositing the indebted asset still fails, and unreadable idle assets still block deposits.
+
 The measurements use Solidity 0.8.26 with the pinned Cancun settings and cold EVM access costs. They are regression evidence for these paths, not a guarantee against a future chain gas-schedule change. Large baskets or expensive oracles can make deposits/views costly; the 28-million requirement applies to redemption.
 
 `MathAndDeployment.t.sol` scans the actual deployed runtime using the protected check's opcode rules and checks the stricter 24,000-byte size bound. The standard ERC-20 Transfer event topic is a private immutable so the compiler emits it in PUSH data; an ordinary pooled constant table was mistaken for opcodes by that linear scanner. This changes no event signature or constructor parameter, and the event topics are tested explicitly.
@@ -56,6 +62,8 @@ The following are accepted by the assignment and are intentionally left unchange
 The owner can prevent deposits through prices, hours, caps or closing assets, and can retire assets after the delay. The guardian can stop deposits and veto most proposals. Neither role has a withdrawal pause, confiscation, rescue/sweep, arbitrary call, configurable fee rate, mint function outside deposit, or upgrade capability. Fee changes mean changes of recipient only; the fixed fee is 50 basis points per deposit/redemption when enabled.
 
 Stock Token issuers and the chain can impose restrictions outside the vault. A claim records an entitlement; it cannot overcome a permanent upstream block, invalid token code, confiscation, or chain censorship. Unknown actual launch dependencies remain owner-configured at genesis. Share supply and live asset state must be checked by the deployment reviewer and monitored by the owner/operator.
+
+Four further advisory behaviors were reproduced and left unchanged under the specified interface and accounting rules: dead-share dust can prevent retired-asset removal; a redemption to the vault creates unclaimable debt; permissionless asset removal can change positional minima before execution; and unaccounted balance increases can dilute existing holders before delayed Resync. README.md now describes each limitation and the operational implications. `.imd-responses.json` records the finding-specific reproductions and disputes; these are documented limitations, not claims that the behaviors are harmless.
 
 ## Interface interpretations
 
