@@ -34,6 +34,12 @@ tested in the gas suite rather than in the claim handler, because claims explici
 forward uncapped gas. A deterministic handler sequence verifies that deferred
 claims, losses, and recovery are reachable.
 
+The handler distinguishes a managed shortfall from uncovered claims on a fully
+written-down asset. Those claims block deposits of that asset, but do not block
+deposits of other assets. A pinned regression and 1,000 fuzz cases exercise this
+distinction across all three decimal formats, then cover the debt exactly, verify
+resync adds no managed surplus, deposit again, and pay the preserved claim.
+
 `AdversarialFlows.t.sol` adds batch rollback, claim ownership and duplicate claims,
 token code removal/recovery, resync excluding debt, zero NAV, retirement, empty and
 invalid inputs, allowance rollback, and exact minimum-share boundaries. Two fuzz

@@ -90,8 +90,9 @@ contract BasketHandler is Test {
             feeds[j].set(1e8, block.timestamp);
             address token = address(stocks[j]);
             before.nav += vault.managed(token) * (1e18 / 10 ** stocks[j].decimals());
+            // Debt coverage is required for the input; other assets are short only while managed is positive.
             if (
-                shortToken == address(0)
+                shortToken == address(0) && (j == ix || vault.managed(token) != 0)
                     && stocks[j].actualBalance(address(vault)) < vault.managed(token) + vault.totalOwed(token)
             ) {
                 shortToken = token;
@@ -405,6 +406,52 @@ contract BasketInvariantTest is Test {
                 handler.claim(i, j, i);
             }
         }
+        invariant_ShareSupplyAndPermanentLock();
+        invariant_CustodyManagedAndClaimsConserveStockTokens();
+    }
+
+    // Pin the zero-managed/non-input case so the handler cannot require an invalid rejection.
+    function test_HandlerAllowsOtherAssetsAfterFullLossWithUncoveredClaims() public {
+        _exerciseUncoveredClaimRecovery(0, 0, 4e18);
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzz_HandlerUncoveredClaimRecovery(uint8 tokenSeed, uint8 actorSeed, uint96 sharesRaw) public {
+        uint256 actor = actorSeed % 3;
+        _exerciseUncoveredClaimRecovery(
+            tokenSeed % 3, actor, bound(sharesRaw, 4e18, vault.balanceOf(handler.actors(actor)))
+        );
+    }
+
+    function _exerciseUncoveredClaimRecovery(uint256 ix, uint256 actor, uint256 shares) private {
+        handler.governance(2); // Defer payments so the claim survives the loss.
+        handler.redeem(actor, shares, 1, false);
+        address token = address(stocks[ix]);
+        uint256 debt = vault.totalOwed(token);
+        assertGt(debt, 0);
+        handler.slash(ix, stocks[ix].actualBalance(address(vault)));
+        handler.flag(ix);
+        handler.recognize(ix);
+        assertEq(vault.managed(token), 0);
+        assertEq(stocks[ix].actualBalance(address(vault)), 0);
+
+        uint256 calls = handler.depositCalls();
+        uint256 other = (ix + 1) % 3;
+        handler.deposit(actor, other, 10 ** stocks[other].decimals(), actor);
+        assertEq(handler.depositCalls(), calls + 1, "uncovered claims on an idle non-input do not block deposits");
+        assertEq(vault.totalOwed(token), debt, "new deposit cannot erase an existing claim");
+
+        handler.deposit(actor, ix, 10 ** stocks[ix].decimals(), actor); // This input still has uncovered debt.
+        assertEq(handler.depositCalls(), calls + 1);
+
+        handler.donate(ix, debt);
+        handler.resync(ix);
+        assertEq(vault.managed(token), 0, "covering claims creates no managed surplus");
+        handler.deposit(actor, ix, 10 ** stocks[ix].decimals(), actor);
+        assertEq(handler.depositCalls(), calls + 2, "exact debt coverage permits this input again");
+        assertEq(vault.totalOwed(token), debt);
+        handler.claim(1, ix, 2);
+        assertEq(vault.totalOwed(token), 0);
         invariant_ShareSupplyAndPermanentLock();
         invariant_CustodyManagedAndClaimsConserveStockTokens();
     }
