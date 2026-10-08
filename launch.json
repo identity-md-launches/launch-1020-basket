@@ -9,5 +9,5 @@
       ]
     }
   ],
-  "notes": "Basket Protocol vault for Stock Tokens on Robinhood Chain, chain id 4663. Basket (BASK) is the vault share, with 18 decimals and zero initial supply. The owner configures genuine assets, feeds and optional pools through genesisList before finalizeGenesis. Fees remain inactive until a feeRecipient proposal executes. No external contracts are called by the constructor."
+  "notes": "Basket Protocol index vault for Stock Tokens on Robinhood Chain (chain id 4663). BaskVault is the vault and its ERC-20 share, Basket (BASK), with 18 decimals, zero supply at deployment and no supply cap; deposits mint shares and redemptions burn net shares. Constructor arguments are the approved owner and guardian, in that order. The constructor makes no external calls. Deposits open after the owner lists at least three assets and finalizes genesis. Fees are inactive until a feeRecipient proposal executes. Only BaskVault is deployed, with all application views included; no separate launch token, pool, website, ETH funding or initialization call is part of this manifest."
 }
